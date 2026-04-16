@@ -128,16 +128,19 @@ jobs:
 
             # Write DB init script (PG16 is fresh, users table needs create_all)
             cat > /opt/stit/init_fresh_db.py << 'PYEOF'
-            import asyncio
+            import asyncio, importlib, pkgutil
             from sqlalchemy.ext.asyncio import create_async_engine
             from src.core.database import Base
             from src.core.config import settings
             import src.models
+            for _, name, _ in pkgutil.iter_modules(src.models.__path__):
+                importlib.import_module(f"src.models.{name}")
+            print(f"Registered {len(Base.metadata.tables)} tables in metadata")
             engine = create_async_engine(settings.DATABASE_URL)
             async def init():
                 async with engine.begin() as conn:
                     await conn.run_sync(Base.metadata.create_all)
-                    print(f"Created {len(Base.metadata.tables)} tables")
+                    print(f"Created all tables successfully")
                 await engine.dispose()
             asyncio.run(init())
             PYEOF
