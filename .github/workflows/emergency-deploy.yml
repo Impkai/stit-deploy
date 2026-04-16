@@ -36,11 +36,11 @@ jobs:
 
       - name: Download repo tarball via API
         env:
-          GH_TOKEN: ${{ secrets.GH_DEPLOY_TOKEN }}
+          DEPLOY_TOKEN: ${{ secrets.GH_DEPLOY_TOKEN }}
         run: |
           set -euo pipefail
           curl -sL \
-            -H "Authorization: token $GH_TOKEN" \
+            -H "Authorization: token $DEPLOY_TOKEN" \
             -H "Accept: application/vnd.github+json" \
             "https://api.github.com/repos/creatigo-of-china/stit-production/tarball/main" \
             -o /tmp/stit-main.tar.gz
