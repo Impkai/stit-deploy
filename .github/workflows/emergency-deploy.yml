@@ -34,38 +34,79 @@ jobs:
             echo "=== git HEAD ==="
             cd /opt/stit && git log -1 --oneline
 
-      - name: Deploy via SSH
-        uses: appleboy/ssh-action@v1
+      - name: Download repo tarball via API
         env:
           GH_TOKEN: ${{ secrets.GH_DEPLOY_TOKEN }}
+        run: |
+          set -euo pipefail
+          curl -sL \
+            -H "Authorization: token $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/creatigo-of-china/stit-production/tarball/main" \
+            -o /tmp/stit-main.tar.gz
+          ls -lh /tmp/stit-main.tar.gz
+          # Verify it's a valid tarball
+          file /tmp/stit-main.tar.gz
+
+      - name: Upload tarball to VPS and deploy
+        uses: appleboy/ssh-action@v1
         with:
           host: ${{ secrets.VPS_HOST }}
           username: ${{ secrets.VPS_USER }}
           key: ${{ secrets.VPS_SSH_KEY }}
           port: ${{ secrets.VPS_PORT }}
           command_timeout: 30m
-          envs: GH_TOKEN
+          script: |
+            echo "Waiting for tarball upload..."
+
+      - name: SCP tarball to VPS
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_PORT: ${{ secrets.VPS_PORT }}
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          install -m 600 /dev/null /tmp/vps_key
+          printf '%s\n' "$VPS_SSH_KEY" > /tmp/vps_key
+          mkdir -p ~/.ssh
+          ssh-keyscan -p "$VPS_PORT" -H "$VPS_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+          scp -i /tmp/vps_key -P "$VPS_PORT" \
+            /tmp/stit-main.tar.gz \
+            "$VPS_USER@$VPS_HOST:/tmp/stit-main.tar.gz"
+          rm -f /tmp/vps_key
+          echo "Tarball uploaded"
+
+      - name: Extract and deploy on VPS
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          port: ${{ secrets.VPS_PORT }}
+          command_timeout: 30m
           script: |
             set -eo pipefail
             cd /opt/stit
 
-            # Inject token into remote URL for this fetch only
-            ORIG_URL=$(git remote get-url origin)
-            git remote set-url origin "https://oauth2:${GH_TOKEN}@github.com/creatigo-of-china/stit-production.git"
+            # Preserve .env, .git, and state dirs
+            echo "Extracting tarball over repo..."
+            STRIP_COMPONENTS=$(tar tzf /tmp/stit-main.tar.gz | head -1 | tr -cd '/' | wc -c)
+            tar xzf /tmp/stit-main.tar.gz --strip-components=$STRIP_COMPONENTS \
+              --exclude='.env' \
+              --exclude='.git' \
+              -C /opt/stit/
+            rm -f /tmp/stit-main.tar.gz
 
-            git fetch --prune origin main
-            git reset --hard origin/main
-            git clean -fd \
-              -e .release-metadata \
-              -e .safety \
-              -e .codex-backups \
-              -e .last-deploy-commit
+            # Update git ref to match (best effort)
+            git add -A 2>/dev/null || true
+            git reset --hard HEAD 2>/dev/null || true
 
-            # Restore original remote URL (no token in git config)
-            git remote set-url origin "$ORIG_URL"
-            echo "Synced to: $(git log -1 --oneline)"
+            echo "Files updated. Running deploy..."
 
-            # Run deploy (skip release records since this is emergency)
+            # Run deploy — skip git sync since we already updated files
+            export SKIP_GIT_SYNC=true
+            export ALLOW_DIRTY_GIT_TREE=true
             export STRICT_RELEASE_RECORDS=false
             export WITH_BASE_BACKUP=false
             export REQUIRE_DB_PITR_DRILL=false
