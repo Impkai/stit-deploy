@@ -124,9 +124,29 @@ jobs:
               -C /opt/stit/
             rm -f /tmp/stit-main.tar.gz
 
-            echo "Files updated. Running deploy..."
-            echo "vps-deploy.sh alembic line check:"
-            grep -n "alembic upgrade" scripts/vps-deploy.sh || echo "no alembic line found"
+            echo "Files updated."
+
+            # Write DB init script (PG16 is fresh, users table needs create_all)
+            cat > /opt/stit/init_fresh_db.py << 'PYEOF'
+            import asyncio
+            from sqlalchemy.ext.asyncio import create_async_engine
+            from src.core.database import Base
+            from src.core.config import settings
+            import src.models
+            engine = create_async_engine(settings.DATABASE_URL)
+            async def init():
+                async with engine.begin() as conn:
+                    await conn.run_sync(Base.metadata.create_all)
+                    print(f"Created {len(Base.metadata.tables)} tables")
+                await engine.dispose()
+            asyncio.run(init())
+            PYEOF
+
+            # Patch vps-deploy.sh: run create_all + stamp instead of upgrade
+            sed -i '/alembic upgrade heads/c\run_compose run --rm --no-deps "$BACKEND_SERVICE" python init_fresh_db.py && run_compose run --rm --no-deps "$BACKEND_SERVICE" alembic stamp heads' scripts/vps-deploy.sh
+
+            echo "Patched alembic line:"
+            grep -n "init_fresh_db\|alembic stamp\|alembic upgrade" scripts/vps-deploy.sh || true
 
             # Run deploy — skip git sync since we already updated files
             export SKIP_GIT_SYNC=true
