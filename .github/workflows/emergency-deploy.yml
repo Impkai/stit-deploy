@@ -65,8 +65,9 @@ jobs:
               -e .last-deploy-commit
             echo "Synced to: $(git log -1 --oneline)"
 
-            # Inject Turnstile secrets into .env
-            python3 - <<'PY'
+            # Inject Turnstile secrets into .env only if provided
+            if [ -n "$TURNSTILE_SECRET_KEY" ] && [ -n "$VITE_TURNSTILE_SITE_KEY" ]; then
+              python3 - <<'PY'
             import os
             from pathlib import Path
 
@@ -75,8 +76,6 @@ jobs:
                 "TURNSTILE_SECRET_KEY": os.environ.get("TURNSTILE_SECRET_KEY", ""),
                 "VITE_TURNSTILE_SITE_KEY": os.environ.get("VITE_TURNSTILE_SITE_KEY", ""),
             }
-            if not all(updates.values()):
-                raise SystemExit("Refusing to inject empty Turnstile secrets")
             lines = env_path.read_text(encoding="utf-8").splitlines() if env_path.exists() else []
             seen = set()
             output = []
@@ -93,6 +92,10 @@ jobs:
                     output.append(f"{key}={value}")
             env_path.write_text("\n".join(output).rstrip() + "\n", encoding="utf-8")
             PY
+              echo "Turnstile secrets injected"
+            else
+              echo "Turnstile secrets not provided; using existing /opt/stit/.env values"
+            fi
 
             # Run deploy (skip release records since this is emergency)
             export STRICT_RELEASE_RECORDS=false
