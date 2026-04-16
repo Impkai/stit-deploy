@@ -91,7 +91,9 @@ jobs:
 
             # Preserve .env, .git, and state dirs
             echo "Extracting tarball over repo..."
-            STRIP_COMPONENTS=$(tar tzf /tmp/stit-main.tar.gz | head -1 | tr -cd '/' | wc -c)
+            FIRST_ENTRY=$(tar tzf /tmp/stit-main.tar.gz 2>/dev/null | head -1 || true)
+            STRIP_COMPONENTS=$(echo "$FIRST_ENTRY" | tr -cd '/' | wc -c)
+            echo "Strip components: $STRIP_COMPONENTS (from: $FIRST_ENTRY)"
             tar xzf /tmp/stit-main.tar.gz --strip-components=$STRIP_COMPONENTS \
               --exclude='.env' \
               --exclude='.git' \
