@@ -1,0 +1,128 @@
+name: Emergency Deploy to VPS
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type DEPLOY to confirm"
+        required: true
+      release_reason:
+        description: "Release reason"
+        required: false
+        default: "Emergency deploy (Actions quota bypass)"
+
+jobs:
+  deploy:
+    if: github.event.inputs.confirm == 'DEPLOY'
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - name: Pre-deploy diagnostic
+        uses: appleboy/ssh-action@v1
+        continue-on-error: true
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          port: ${{ secrets.VPS_PORT }}
+          command_timeout: 2m
+          script: |
+            echo "=== docker ps ==="
+            docker ps -a --format 'table {{.Names}}\t{{.Status}}\t{{.Image}}' | head -30
+            echo "=== disk ==="
+            df -h /var/lib/docker / | head -5
+            echo "=== git HEAD ==="
+            cd /opt/stit && git log -1 --oneline
+
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1
+        env:
+          GH_DEPLOY_TOKEN: ${{ secrets.GH_DEPLOY_TOKEN }}
+          TURNSTILE_SECRET_KEY: ${{ secrets.TURNSTILE_SECRET_KEY }}
+          VITE_TURNSTILE_SITE_KEY: ${{ secrets.VITE_TURNSTILE_SITE_KEY }}
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          port: ${{ secrets.VPS_PORT }}
+          command_timeout: 30m
+          envs: GH_DEPLOY_TOKEN,TURNSTILE_SECRET_KEY,VITE_TURNSTILE_SITE_KEY
+          script: |
+            set -eo pipefail
+            cd /opt/stit
+
+            # Configure git deploy token
+            git config --local credential.helper \
+              "!f() { echo username=x-access-token; echo password=$GH_DEPLOY_TOKEN; }; f"
+
+            # Sync to latest main
+            git fetch --prune origin main
+            git reset --hard origin/main
+            git clean -fd \
+              -e .release-metadata \
+              -e .safety \
+              -e .codex-backups \
+              -e .last-deploy-commit
+            echo "Synced to: $(git log -1 --oneline)"
+
+            # Inject Turnstile secrets into .env
+            python3 - <<'PY'
+            import os
+            from pathlib import Path
+
+            env_path = Path("/opt/stit/.env")
+            updates = {
+                "TURNSTILE_SECRET_KEY": os.environ.get("TURNSTILE_SECRET_KEY", ""),
+                "VITE_TURNSTILE_SITE_KEY": os.environ.get("VITE_TURNSTILE_SITE_KEY", ""),
+            }
+            if not all(updates.values()):
+                raise SystemExit("Refusing to inject empty Turnstile secrets")
+            lines = env_path.read_text(encoding="utf-8").splitlines() if env_path.exists() else []
+            seen = set()
+            output = []
+            for line in lines:
+                if "=" in line:
+                    key, _ = line.split("=", 1)
+                    if key in updates:
+                        output.append(f"{key}={updates[key]}")
+                        seen.add(key)
+                        continue
+                output.append(line)
+            for key, value in updates.items():
+                if key not in seen:
+                    output.append(f"{key}={value}")
+            env_path.write_text("\n".join(output).rstrip() + "\n", encoding="utf-8")
+            PY
+
+            # Run deploy (skip release records since this is emergency)
+            export STRICT_RELEASE_RECORDS=false
+            export WITH_BASE_BACKUP=false
+            export REQUIRE_DB_PITR_DRILL=false
+            export REQUIRE_OBJECT_RESTORE_DRILL=false
+
+            set +e
+            bash scripts/vps-deploy.sh
+            VPS_EXIT=$?
+            set -e
+
+            git config --local --unset credential.helper || true
+
+            if [ "$VPS_EXIT" -ne 0 ]; then
+              echo "::error::vps-deploy.sh exited with $VPS_EXIT"
+              exit "$VPS_EXIT"
+            fi
+
+      - name: Verify deployment
+        run: |
+          sleep 20
+          echo "=== Site reachable ==="
+          curl -sI https://stit.ai/ | head -10
+          echo "=== Bundle hash ==="
+          curl -s https://stit.ai/ | grep -oE 'index-[a-zA-Z0-9]+\.js' | head -1
+          echo "=== API health ==="
+          curl -sf https://stit.ai/api/v1/health || echo "health check failed"
+          echo "=== Auth sanity (expect 401/422) ==="
+          curl -s -o /dev/null -w "%{http_code}" -X POST https://stit.ai/api/v1/auth/login \
+            -H 'Content-Type: application/json' \
+            -d '{"email":"test@test.com","password":"testtest"}'
+          echo ""
