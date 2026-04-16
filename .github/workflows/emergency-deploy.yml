@@ -143,7 +143,7 @@ jobs:
             PYEOF
 
             # Patch vps-deploy.sh: run create_all + stamp instead of upgrade
-            sed -i '/alembic upgrade heads/c\run_compose run --rm --no-deps "$BACKEND_SERVICE" python init_fresh_db.py && run_compose run --rm --no-deps "$BACKEND_SERVICE" alembic stamp heads' scripts/vps-deploy.sh
+            sed -i '/alembic upgrade heads/c\run_compose run --rm --no-deps -v /opt/stit/init_fresh_db.py:/app/init_fresh_db.py "$BACKEND_SERVICE" python init_fresh_db.py && run_compose run --rm --no-deps "$BACKEND_SERVICE" alembic stamp heads' scripts/vps-deploy.sh
 
             echo "Patched alembic line:"
             grep -n "init_fresh_db\|alembic stamp\|alembic upgrade" scripts/vps-deploy.sh || true
