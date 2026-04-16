@@ -51,7 +51,7 @@ jobs:
 
             # Inject token into remote URL for this fetch only
             ORIG_URL=$(git remote get-url origin)
-            git remote set-url origin "https://${GH_TOKEN}@github.com/creatigo-of-china/stit-production.git"
+            git remote set-url origin "https://oauth2:${GH_TOKEN}@github.com/creatigo-of-china/stit-production.git"
 
             git fetch --prune origin main
             git reset --hard origin/main
