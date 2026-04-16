@@ -126,31 +126,49 @@ jobs:
 
             echo "Files updated."
 
-            # Drop all tables and enable extensions for fresh alembic upgrade
-            cat > /opt/stit/prepare_fresh_db.py << 'PYEOF'
-            import asyncio
+            # create_all for ORM tables + system_settings (migration-only) + stamp
+            cat > /opt/stit/init_fresh_db.py << 'PYEOF'
+            import asyncio, importlib, pkgutil
             from sqlalchemy import text
             from sqlalchemy.ext.asyncio import create_async_engine
+            from src.core.database import Base
             from src.core.config import settings
+            import src.models
+            for _, name, _ in pkgutil.iter_modules(src.models.__path__):
+                importlib.import_module(f"src.models.{name}")
+            print(f"Registered {len(Base.metadata.tables)} tables in metadata")
             engine = create_async_engine(settings.DATABASE_URL)
             async def init():
                 async with engine.begin() as conn:
-                    await conn.execute(text("DROP SCHEMA public CASCADE"))
-                    await conn.execute(text("CREATE SCHEMA public"))
-                    await conn.execute(text("GRANT ALL ON SCHEMA public TO stit"))
-                    print("Schema reset: all tables dropped")
                     await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
                     await conn.execute(text("CREATE EXTENSION IF NOT EXISTS pg_trgm"))
                     print("Extensions enabled: vector, pg_trgm")
+                    await conn.run_sync(Base.metadata.create_all)
+                    print("Created all ORM tables")
+                    await conn.execute(text("""
+                        CREATE TABLE IF NOT EXISTS system_settings (
+                            key VARCHAR(64) PRIMARY KEY,
+                            value JSONB NOT NULL DEFAULT '{}',
+                            updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+                        )
+                    """))
+                    await conn.execute(text("""
+                        INSERT INTO system_settings (key, value, updated_at)
+                        VALUES ('global', '{"maintenance_mode": false, "registration_enabled": true,
+                            "max_techpacks_free": 3, "max_techpacks_starter": 20, "max_techpacks_pro": -1,
+                            "ai_default_model": "gpt-4o-mini", "support_confidence_threshold": 0.6}'::jsonb, now())
+                        ON CONFLICT (key) DO NOTHING
+                    """))
+                    print("Created system_settings table with defaults")
                 await engine.dispose()
             asyncio.run(init())
             PYEOF
 
-            # Patch vps-deploy.sh: reset schema + extensions, then full alembic upgrade
-            sed -i '/alembic upgrade heads/c\run_compose run --rm --no-deps -v /opt/stit/prepare_fresh_db.py:/app/prepare_fresh_db.py "$BACKEND_SERVICE" python prepare_fresh_db.py && run_compose run --rm --no-deps "$BACKEND_SERVICE" alembic upgrade heads' scripts/vps-deploy.sh
+            # Patch vps-deploy.sh: create_all + system_settings + stamp
+            sed -i '/alembic upgrade heads/c\run_compose run --rm --no-deps -v /opt/stit/init_fresh_db.py:/app/init_fresh_db.py "$BACKEND_SERVICE" python init_fresh_db.py && run_compose run --rm --no-deps "$BACKEND_SERVICE" alembic stamp heads' scripts/vps-deploy.sh
 
             echo "Patched alembic line:"
-            grep -n "prepare_fresh_db\|alembic" scripts/vps-deploy.sh || true
+            grep -n "init_fresh_db\|alembic" scripts/vps-deploy.sh || true
 
             # Run deploy — skip git sync since we already updated files
             export SKIP_GIT_SYNC=true
