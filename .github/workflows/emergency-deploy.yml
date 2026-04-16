@@ -17,7 +17,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 35
     steps:
-      - name: Pre-deploy diagnostic
+      - name: Disk cleanup and diagnostic
         uses: appleboy/ssh-action@v1
         continue-on-error: true
         with:
@@ -25,12 +25,29 @@ jobs:
           username: ${{ secrets.VPS_USER }}
           key: ${{ secrets.VPS_SSH_KEY }}
           port: ${{ secrets.VPS_PORT }}
-          command_timeout: 2m
+          command_timeout: 5m
           script: |
+            echo "=== disk BEFORE cleanup ==="
+            df -h / | tail -1
+
+            echo "=== cleaning docker ==="
+            docker system prune -af --volumes 2>/dev/null | tail -3 || true
+            docker builder prune -af 2>/dev/null | tail -3 || true
+
+            echo "=== cleaning old pg15 backup if exists ==="
+            rm -f /tmp/stit_pg15_dump.sql /tmp/stit-main.tar.gz 2>/dev/null || true
+            rm -rf /tmp/stit-pg16-upgrade-* 2>/dev/null || true
+
+            echo "=== disk AFTER cleanup ==="
+            df -h / | tail -1
+
             echo "=== docker ps ==="
-            docker ps -a --format 'table {{.Names}}\t{{.Status}}\t{{.Image}}' | head -30
-            echo "=== disk ==="
-            df -h /var/lib/docker / | head -5
+            docker ps -a --format 'table {{.Names}}\t{{.Status}}\t{{.Image}}' | head -20
+
+            echo "=== db check: tables in stit database ==="
+            docker exec stit-db-1 psql -U postgres -d stit -c "SELECT count(*) as table_count FROM information_schema.tables WHERE table_schema='public';" 2>&1 || echo "DB check failed"
+            docker exec stit-db-1 psql -U postgres -d stit -c "SELECT tablename FROM pg_tables WHERE schemaname='public' ORDER BY tablename LIMIT 10;" 2>&1 || echo "Table list failed"
+
             echo "=== git HEAD ==="
             cd /opt/stit && git log -1 --oneline
 
