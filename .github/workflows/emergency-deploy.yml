@@ -129,6 +129,7 @@ jobs:
             # Write DB init script (PG16 is fresh, users table needs create_all)
             cat > /opt/stit/init_fresh_db.py << 'PYEOF'
             import asyncio, importlib, pkgutil
+            from sqlalchemy import text
             from sqlalchemy.ext.asyncio import create_async_engine
             from src.core.database import Base
             from src.core.config import settings
@@ -139,8 +140,11 @@ jobs:
             engine = create_async_engine(settings.DATABASE_URL)
             async def init():
                 async with engine.begin() as conn:
+                    await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+                    await conn.execute(text("CREATE EXTENSION IF NOT EXISTS pg_trgm"))
+                    print("Extensions enabled: vector, pg_trgm")
                     await conn.run_sync(Base.metadata.create_all)
-                    print(f"Created all tables successfully")
+                    print("Created all tables successfully")
                 await engine.dispose()
             asyncio.run(init())
             PYEOF
