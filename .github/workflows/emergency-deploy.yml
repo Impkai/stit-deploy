@@ -33,29 +33,23 @@ jobs:
             df -h /var/lib/docker / | head -5
             echo "=== git HEAD ==="
             cd /opt/stit && git log -1 --oneline
+            echo "=== git remote ==="
+            cd /opt/stit && git remote -v
 
       - name: Deploy via SSH
         uses: appleboy/ssh-action@v1
-        env:
-          GH_DEPLOY_TOKEN: ${{ secrets.GH_DEPLOY_TOKEN }}
-          TURNSTILE_SECRET_KEY: ${{ secrets.TURNSTILE_SECRET_KEY }}
-          VITE_TURNSTILE_SITE_KEY: ${{ secrets.VITE_TURNSTILE_SITE_KEY }}
         with:
           host: ${{ secrets.VPS_HOST }}
           username: ${{ secrets.VPS_USER }}
           key: ${{ secrets.VPS_SSH_KEY }}
           port: ${{ secrets.VPS_PORT }}
           command_timeout: 30m
-          envs: GH_DEPLOY_TOKEN,TURNSTILE_SECRET_KEY,VITE_TURNSTILE_SITE_KEY
           script: |
             set -eo pipefail
             cd /opt/stit
 
-            # Configure git deploy token
-            git config --local credential.helper \
-              "!f() { echo username=x-access-token; echo password=$GH_DEPLOY_TOKEN; }; f"
-
-            # Sync to latest main
+            # Use whatever git auth the VPS already has
+            # (deploy key or token configured in previous deploys)
             git fetch --prune origin main
             git reset --hard origin/main
             git clean -fd \
@@ -64,38 +58,6 @@ jobs:
               -e .codex-backups \
               -e .last-deploy-commit
             echo "Synced to: $(git log -1 --oneline)"
-
-            # Inject Turnstile secrets into .env only if provided
-            if [ -n "$TURNSTILE_SECRET_KEY" ] && [ -n "$VITE_TURNSTILE_SITE_KEY" ]; then
-              python3 - <<'PY'
-            import os
-            from pathlib import Path
-
-            env_path = Path("/opt/stit/.env")
-            updates = {
-                "TURNSTILE_SECRET_KEY": os.environ.get("TURNSTILE_SECRET_KEY", ""),
-                "VITE_TURNSTILE_SITE_KEY": os.environ.get("VITE_TURNSTILE_SITE_KEY", ""),
-            }
-            lines = env_path.read_text(encoding="utf-8").splitlines() if env_path.exists() else []
-            seen = set()
-            output = []
-            for line in lines:
-                if "=" in line:
-                    key, _ = line.split("=", 1)
-                    if key in updates:
-                        output.append(f"{key}={updates[key]}")
-                        seen.add(key)
-                        continue
-                output.append(line)
-            for key, value in updates.items():
-                if key not in seen:
-                    output.append(f"{key}={value}")
-            env_path.write_text("\n".join(output).rstrip() + "\n", encoding="utf-8")
-            PY
-              echo "Turnstile secrets injected"
-            else
-              echo "Turnstile secrets not provided; using existing /opt/stit/.env values"
-            fi
 
             # Run deploy (skip release records since this is emergency)
             export STRICT_RELEASE_RECORDS=false
@@ -107,8 +69,6 @@ jobs:
             bash scripts/vps-deploy.sh
             VPS_EXIT=$?
             set -e
-
-            git config --local --unset credential.helper || true
 
             if [ "$VPS_EXIT" -ne 0 ]; then
               echo "::error::vps-deploy.sh exited with $VPS_EXIT"
