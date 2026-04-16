@@ -117,11 +117,9 @@ jobs:
               -C /opt/stit/
             rm -f /tmp/stit-main.tar.gz
 
-            # Update git ref to match (best effort)
-            git add -A 2>/dev/null || true
-            git reset --hard HEAD 2>/dev/null || true
-
             echo "Files updated. Running deploy..."
+            echo "vps-deploy.sh alembic line check:"
+            grep -n "alembic upgrade" scripts/vps-deploy.sh || echo "no alembic line found"
 
             # Run deploy — skip git sync since we already updated files
             export SKIP_GIT_SYNC=true
