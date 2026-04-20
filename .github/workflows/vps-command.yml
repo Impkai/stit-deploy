@@ -1,0 +1,27 @@
+name: Run VPS Command
+
+on:
+  workflow_dispatch:
+    inputs:
+      command:
+        description: "Command to run on VPS"
+        required: true
+      confirm:
+        description: "Type RUN to confirm"
+        required: true
+
+jobs:
+  run:
+    if: github.event.inputs.confirm == 'RUN'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Execute on VPS
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          port: ${{ secrets.VPS_PORT }}
+          command_timeout: 3m
+          script: ${{ github.event.inputs.command }}
